@@ -26,7 +26,6 @@ router.post(
   "/refund/:appointmentId",
   authenticate,
   authorize(Role.ADMIN),
-  idempotency(),
   asyncHandler(controller.refundAppointment),
 );
 

@@ -25,8 +25,12 @@ async function getAuthToken(): Promise<string> {
 
   const res = await fetch(`${PAYMOB_BASE_URL}/auth/tokens`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: env.PAYMOB_API_KEY }),
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      api_key: env.PAYMOB_API_KEY,
+    }),
   });
 
   if (!res.ok) {
@@ -45,7 +49,9 @@ async function createOrder(
 ): Promise<string> {
   const res = await fetch(`${PAYMOB_BASE_URL}/ecommerce/orders`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       auth_token: authToken,
       delivery_needed: false,
@@ -80,7 +86,9 @@ async function createPaymentKey(
 
   const res = await fetch(`${PAYMOB_BASE_URL}/acceptance/payment_keys`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       auth_token: authToken,
       amount_cents: amountCents,
@@ -139,7 +147,7 @@ export async function createPaymentSession(
     first_name: firstName,
     last_name: lastName,
     email: patient.email,
-    phone_number: "N/A", // optional — يمكن تضيف phone للـ user model لاحقاً
+    phone_number: "N/A",
     apartment: "N/A",
     floor: "N/A",
     street: "N/A",
@@ -165,7 +173,6 @@ export async function createPaymentSession(
     billingData,
   );
 
-  // حفظ الـ paymobOrderId للـ webhook reconciliation
   appointment.paymentIntentId = paymobOrderId;
   await appointment.save();
 
@@ -175,17 +182,16 @@ export async function createPaymentSession(
   return { iframeUrl, paymobOrderId };
 }
 
-// ===== Webhook Handler =====
-// Paymob بيبعت GET request (redirect) و POST (callback)
-// بنستخدم الـ POST callback
-
 export interface PaymobWebhookPayload {
   obj: {
     id: number;
     success: boolean;
     amount_cents: number;
     currency: string;
-    order: { id: number; merchant_order_id: string };
+    order: {
+      id: number;
+      merchant_order_id: string;
+    };
     is_refund: boolean;
     is_void: boolean;
     pending: boolean;
@@ -234,7 +240,7 @@ export async function handlePaymobWebhook(
     throw new AppError("WEBHOOK_INVALID", 400, "Invalid Paymob HMAC signature");
   }
 
-  const { obj } = payload;
+  const obj = payload.obj;
 
   // 2. Handle transaction
   if (obj.success && !obj.is_refund && !obj.is_void) {
@@ -247,14 +253,14 @@ export async function handlePaymobWebhook(
 async function onPaymentSucceeded(appointmentId: string): Promise<void> {
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) return;
-  if (appointment.status === AppointmentStatus.CONFIRMED) return; // idempotent
+  if (appointment.status === AppointmentStatus.CONFIRMED) return;
 
   appointment.status = AppointmentStatus.CONFIRMED;
   appointment.paymentStatus = PaymentStatus.PAID;
   appointment.confirmedAt = new Date();
   await appointment.save();
 
-  // Invalidate slots cache
+  // Invalidate slots cache for the doctor on that day
   const dateStr = appointment.date.toISOString().split("T")[0]!;
   await cacheService.del(
     REDIS_KEYS.doctorSlots(appointment.doctorId.toString(), dateStr),
@@ -327,24 +333,13 @@ export async function refundAppointment(appointmentId: string): Promise<void> {
     throw new AppError("NO_PAYMENT_ID", 400, "No Paymob order ID found");
   }
 
-  await processRefund(
-    appointment.paymentIntentId,
-    appointment.doctorId.toString(),
-  );
+  await processRefund(appointment.paymentIntentId);
   appointment.paymentStatus = PaymentStatus.REFUNDED;
   await appointment.save();
 }
 
 // بتتاستخدم كمان من expiration worker و cancel flow
-export async function processRefund(
-  paymobOrderId: string,
-  doctorId?: string,
-): Promise<void> {
-  // لإتمام الـ refund بنحتاج transaction ID مش order ID
-  // الأبسط هو إننا نعمل void لو الـ transaction لسه fresh
-  // أو نستخدم Paymob dashboard للـ manual refund
-  // هنا بنسجل الطلب وبنحدث الـ status — الـ refund الفعلي عبر webhook
-
+export async function processRefund(paymobOrderId: string): Promise<void> {
   const authToken = await getAuthToken();
 
   // Get transactions for this order
@@ -380,7 +375,9 @@ export async function processRefund(
     `${PAYMOB_BASE_URL}/acceptance/void_refund/refund`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
         auth_token: authToken,
         transaction_id: successfulTx.id,
