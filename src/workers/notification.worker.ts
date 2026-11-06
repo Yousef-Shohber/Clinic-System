@@ -2,7 +2,7 @@ import { Job } from "bullmq";
 import { createWorker } from "./queue.definitions";
 import { Appointment } from "../models/appointment.model";
 import { User } from "../models/user.model";
-import { NotificationType } from "../types/enums";
+import { AppointmentStatus, NotificationType } from "../types/enums";
 import { emailService } from "../services/email.service";
 import { wsEmit } from "../services/websocket.service";
 import { logger } from "../config/logger";
@@ -35,6 +35,19 @@ export function startNotificationWorker() {
         logger.warn(
           { appointmentId },
           "Appointment not found for notification",
+        );
+        return;
+      }
+
+      // A reminder for an appointment that was cancelled/expired meanwhile
+      // would be wrong and confusing
+      if (
+        type === NotificationType.APPOINTMENT_REMINDER &&
+        appointment.status !== AppointmentStatus.CONFIRMED
+      ) {
+        logger.info(
+          { appointmentId, status: appointment.status },
+          "Reminder skipped: appointment no longer confirmed",
         );
         return;
       }

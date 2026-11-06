@@ -3,7 +3,8 @@ import { Schedule } from "../../models/schedule.model";
 import { Appointment } from "../../models/appointment.model";
 import { Review } from "../../models/review.model";
 import { AppError } from "../../types/errors";
-import { AppointmentStatus } from "../../types/enums";
+import { ACTIVE_SLOT_STATUSES } from "../../models/appointment.model";
+import { clinicDateTimeToUtc } from "../../utils/clinic-time";
 import { cacheService, REDIS_KEYS } from "../../services/cache.service";
 import { generateSlots, getDayName } from "../../utils/schedule-generator";
 import {
@@ -47,7 +48,11 @@ export async function listDoctors(query: ListDoctorsQuery) {
 
   if (search) filter.$text = { $search: search };
   if (specialization)
-    filter.specialization = { $regex: specialization, $options: "i" };
+    // user input must be escaped, otherwise it is a regex-injection / ReDoS vector
+    filter.specialization = {
+      $regex: specialization.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      $options: "i",
+    };
   if (minRating !== undefined) filter.averageRating = { $gte: minRating };
   if (maxFees !== undefined) filter.fees = { $lte: maxFees };
 
@@ -55,7 +60,7 @@ export async function listDoctors(query: ListDoctorsQuery) {
     Doctor.find(filter)
       .skip(skip)
       .limit(limit)
-      .sort({ averageRating: -1 })
+      .sort({ averageRating: -1, _id: 1 })
       .lean(),
     Doctor.countDocuments(filter),
   ]);
@@ -83,7 +88,7 @@ export async function getDoctorById(doctorId: string) {
   if (!doctor) throw new AppError("NOT_FOUND", 404, "Doctor not found");
 
   const recentReviews = await Review.find({ doctorId })
-    .sort({ createdAt: -1 })
+    .sort({ createdAt: -1, _id: -1 })
     .limit(3)
     .populate("patientId", "name profilePhoto")
     .lean();
@@ -132,34 +137,53 @@ export async function verifyDoctor(
 // ===== Available Slots =====
 
 export async function getAvailableSlots(doctorId: string, date: string) {
-  const cacheKey = REDIS_KEYS.doctorSlots(doctorId, date);
-  const cached = await cacheService.get<object[]>(cacheKey);
-  if (cached) return cached;
+  // Cache entries are keyed by the doctor's slots version. Anything that can
+  // change availability bumps it, so a reader that raced with a booking can only
+  // write into a key nobody reads any more (no stale slots after invalidation).
+  const version = await cacheService.getDoctorSlotsVersion(doctorId);
+  const cacheKey = REDIS_KEYS.doctorSlots(doctorId, date, version);
 
-  const dayName = getDayName(date);
-  const schedule = await Schedule.findOne({
-    doctorId,
-    day: dayName,
-    isActive: true,
-  });
-  if (!schedule) return [];
+  let available =
+    await cacheService.get<Array<{ startTime: string; endTime: string }>>(
+      cacheKey,
+    );
 
-  const allSlots = generateSlots(
-    schedule.startTime,
-    schedule.endTime,
-    schedule.slotDuration,
+  if (!available) {
+    const dayName = getDayName(date);
+    const schedule = await Schedule.findOne({
+      doctorId,
+      day: dayName,
+      isActive: true,
+    });
+    if (!schedule) return [];
+
+    const allSlots = generateSlots(
+      schedule.startTime,
+      schedule.endTime,
+      schedule.slotDuration,
+    );
+
+    const dateObj = new Date(date + "T00:00:00Z");
+    const booked = await Appointment.find({
+      doctorId,
+      date: dateObj,
+      status: { $in: ACTIVE_SLOT_STATUSES },
+    }).select("startTime");
+
+    const bookedTimes = new Set(booked.map((a) => a.startTime));
+    available = allSlots.filter((s) => !bookedTimes.has(s.startTime));
+
+    try {
+      await cacheService.set(cacheKey, available);
+    } catch {
+      // a cache write failure must not fail the request
+    }
+  }
+
+  // Applied after the cache: "has this slot already started?" depends on the
+  // current time, so it must not be frozen into a cached value
+  const now = Date.now();
+  return available.filter(
+    (s) => clinicDateTimeToUtc(date, s.startTime).getTime() > now,
   );
-
-  const dateObj = new Date(date + "T00:00:00Z");
-  const booked = await Appointment.find({
-    doctorId,
-    date: dateObj,
-    status: { $in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED] },
-  }).select("startTime");
-
-  const bookedTimes = new Set(booked.map((a) => a.startTime));
-  const available = allSlots.filter((s) => !bookedTimes.has(s.startTime));
-
-  await cacheService.set(cacheKey, available);
-  return available;
 }

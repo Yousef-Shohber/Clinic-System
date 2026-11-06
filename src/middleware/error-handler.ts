@@ -13,6 +13,19 @@ interface ErrorResponse {
   };
 }
 
+interface HttpClientError {
+  status?: number;
+  statusCode?: number;
+  type?: string;
+}
+
+function isHttpClientError(err: unknown): err is HttpClientError {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as HttpClientError;
+  const status = e.status ?? e.statusCode;
+  return typeof status === "number" && status >= 400 && status < 500;
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
@@ -22,7 +35,7 @@ export function errorHandler(
   const env = getEnv();
 
   logger.error(
-    { Error: err, requestId: req.requestId, path: req.path },
+    { err, requestId: req.requestId, path: req.path },
     "Request error",
   );
 
@@ -61,7 +74,21 @@ export function errorHandler(
       ? Object.keys(mongoErr.keyValue)[0]
       : "unknown";
     message = `Duplicate value for field: ${field}`;
-    details = mongoErr.keyValue;
+  } else if (isHttpClientError(err)) {
+    statusCode = err.status ?? err.statusCode ?? 400;
+    switch (err.type) {
+      case "entity.too.large":
+        code = "PAYLOAD_TOO_LARGE";
+        message = "Request body too large";
+        break;
+      case "entity.parse.failed":
+        code = "INVALID_JSON";
+        message = "Malformed JSON body";
+        break;
+      default:
+        code = "BAD_REQUEST";
+        message = "Bad request";
+    }
   } else if (err instanceof Error) {
     if (env.NODE_ENV !== "production") {
       message = err.message;

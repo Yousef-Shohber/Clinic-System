@@ -1,4 +1,8 @@
-import { Appointment, IAppointment } from "../../models/appointment.model";
+import {
+  Appointment,
+  IAppointment,
+  ACTIVE_SLOT_STATUSES,
+} from "../../models/appointment.model";
 import { Doctor } from "../../models/doctor.model";
 import { Schedule } from "../../models/schedule.model";
 import { AppError } from "../../types/errors";
@@ -16,7 +20,9 @@ import {
   getExpirationQueue,
   getNotificationQueue,
 } from "../../workers/queue.definitions";
-import { processRefund } from "../payment/payment.service";
+import { refundPaidAppointment } from "../payment/payment.service";
+import { clinicDateTimeToUtc, toDateString } from "../../utils/clinic-time";
+import { logger } from "../../config/logger";
 import getEnv from "../../config/env";
 import {
   CreateAppointmentDtoType,
@@ -79,51 +85,92 @@ export async function createAppointment(
     throw new AppError("INVALID_SLOT", 400, "Invalid time slot");
   }
 
+  // slot times are clinic wall-clock times: a slot that already started can't be booked
+  if (clinicDateTimeToUtc(date, startTime).getTime() <= Date.now()) {
+    throw new AppError(
+      "SLOT_IN_PAST",
+      400,
+      "This time slot has already passed",
+    );
+  }
+
   const lockKey = REDIS_KEYS.slotLock(doctorId, date, startTime);
   const env = getEnv();
-  const appointment = await lockService.withLock(
-    lockKey,
-    env.LOCK_TTL_MS,
-    async () => {
-      const taken = await Appointment.findOne({
-        doctorId,
-        date: dateObj,
-        startTime,
-        status: {
-          $in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED],
-        },
-      });
-      if (taken) {
+  const slotFilter = {
+    doctorId,
+    date: dateObj,
+    startTime,
+    status: { $in: ACTIVE_SLOT_STATUSES },
+  };
+
+  let appointment: IAppointment;
+  try {
+    appointment = await lockService.withLock(
+      lockKey,
+      env.LOCK_TTL_MS,
+      async () => {
+        const taken = await Appointment.exists(slotFilter);
+        if (taken) {
+          throw new AppError("SLOT_TAKEN", 409, "This slot is already booked");
+        }
+
+        try {
+          return await Appointment.create({
+            doctorId,
+            patientId,
+            scheduleId: schedule._id,
+            date: dateObj,
+            startTime,
+            endTime: slot.endTime,
+            patientNotes,
+            status: AppointmentStatus.PENDING,
+            paymentStatus: PaymentStatus.UNPAID,
+          });
+        } catch (err) {
+          // The partial unique index is the real guarantee; the lock is only
+          // an optimisation in front of it
+          if ((err as { code?: number }).code === 11000) {
+            throw new AppError(
+              "SLOT_TAKEN",
+              409,
+              "This slot is already booked",
+            );
+          }
+          throw err;
+        }
+      },
+    );
+  } catch (err) {
+    // Under heavy contention the lock may not be obtained in time. If the slot
+    // has been taken in the meantime, say so (409) instead of "try again" (503).
+    if (err instanceof AppError && err.code === "LOCK_UNAVAILABLE") {
+      if (await Appointment.exists(slotFilter)) {
         throw new AppError("SLOT_TAKEN", 409, "This slot is already booked");
       }
-
-      return Appointment.create({
-        doctorId,
-        patientId,
-        scheduleId: schedule._id,
-        date: dateObj,
-        startTime,
-        endTime: slot.endTime,
-        patientNotes,
-        status: AppointmentStatus.PENDING,
-        paymentStatus: PaymentStatus.UNPAID,
-      });
-    },
-  );
+    }
+    throw err;
+  }
 
   // BullMQ delayed job — fires at expiresAt to expire if not paid
-  await getExpirationQueue().add(
-    "expire-appointment",
-    { appointmentId: appointment._id.toString() },
-    {
-      jobId: appointment._id.toString(), // unique jobId عشان نقدر نشيله لو اتدفع
-      delay: appointment.expiresAt.getTime() - Date.now(),
-      attempts: 3,
-      backoff: { type: "exponential", delay: 2000 },
-    },
-  );
+  try {
+    await getExpirationQueue().add(
+      "expire-appointment",
+      { appointmentId: appointment._id.toString() },
+      {
+        jobId: appointment._id.toString(), // unique jobId عشان نقدر نشيله لو اتدفع
+        delay: Math.max(0, appointment.expiresAt.getTime() - Date.now()),
+        attempts: 3,
+        backoff: { type: "exponential", delay: 2000 },
+      },
+    );
+  } catch (err) {
+    // Partial failure: without its expiry job the hold could never be released.
+    // Roll the booking back so the slot isn't blocked.
+    await Appointment.deleteOne({ _id: appointment._id });
+    throw err;
+  }
 
-  await cacheService.del(REDIS_KEYS.doctorSlots(doctorId, date));
+  await cacheService.invalidateDoctorSlots(doctorId);
 
   wsEmit.appointmentCreated(patientId, {
     appointmentId: appointment._id.toString(),
@@ -161,7 +208,7 @@ export async function getMyAppointments(
     Appointment.find(filter)
       .skip(skip)
       .limit(limit)
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .populate("doctorId", "doctorName specialization fees")
       .populate("patientId", "name email profilePhoto"),
     Appointment.countDocuments(filter),
@@ -188,7 +235,7 @@ export async function getAllAppointments(query: ListAllAppointmentsDtoType) {
     Appointment.find(filter)
       .skip(skip)
       .limit(limit)
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .populate("doctorId", "doctorName specialization")
       .populate("patientId", "name email"),
     Appointment.countDocuments(filter),
@@ -286,47 +333,72 @@ export async function cancelAppointment(
       );
     }
   }
-  // admin → يقدر يكنسل أي status
+  // admin → can cancel any live appointment (a cancelled/expired one has nothing left to cancel)
+  const cancellable: AppointmentStatus[] = [
+    AppointmentStatus.PENDING,
+    AppointmentStatus.CONFIRMED,
+  ];
+  if (role === Role.ADMIN) cancellable.push(AppointmentStatus.COMPLETED);
 
-  // Refund لو كان paid
-  if (
-    appointment.paymentStatus === PaymentStatus.PAID &&
-    appointment.paymentIntentId
-  ) {
-    await processRefund(appointment.paymentIntentId);
-    appointment.paymentStatus = PaymentStatus.REFUNDED;
+  // Atomic claim of the cancellation: two concurrent cancels (or a cancel racing
+  // a payment/expiry) cannot both succeed, so refunds and emails happen once.
+  const claimed = await Appointment.findOneAndUpdate(
+    { _id: appointment._id, status: { $in: cancellable } },
+    { status: AppointmentStatus.CANCELLED, cancelledAt: new Date() },
+    { new: true },
+  );
+  if (!claimed) {
+    throw new AppError("INVALID_STATUS", 400, "Cannot cancel this appointment");
   }
 
-  // Remove expiry job لو كان pending
-  if (appointment.status === AppointmentStatus.PENDING) {
+  // Remove expiry / reminder jobs (best effort — both workers re-check status)
+  try {
     const job = await getExpirationQueue().getJob(appointmentId);
     if (job) await job.remove();
+    const reminder = await getNotificationQueue().getJob(
+      `reminder-${appointmentId}`,
+    );
+    if (reminder) await reminder.remove();
+  } catch (err) {
+    logger.warn({ err, appointmentId }, "Could not remove queued jobs");
   }
 
-  appointment.status = AppointmentStatus.CANCELLED;
-  appointment.cancelledAt = new Date();
-  await appointment.save();
+  // Refund if it was paid. Runs under a per-appointment lock inside
+  // refundPaidAppointment. If Paymob refuses, the appointment stays PAID (not
+  // falsely REFUNDED) so an admin can retry via POST /payments/refund/:id.
+  if (claimed.paymentStatus === PaymentStatus.PAID) {
+    try {
+      await refundPaidAppointment(appointmentId);
+    } catch (err) {
+      logger.error(
+        { err, appointmentId },
+        "Refund failed while cancelling; appointment left PAID for retry",
+      );
+    }
+  }
 
   // Invalidate slots cache
-  const dateStr = appointment.date.toISOString().split("T")[0]!;
-  await cacheService.del(
-    REDIS_KEYS.doctorSlots(appointment.doctorId.toString(), dateStr),
-  );
+  await cacheService.invalidateDoctorSlots(claimed.doctorId.toString());
 
   // WebSocket + notification
-  wsEmit.appointmentCancelled(appointment.patientId.toString(), appointmentId);
+  wsEmit.appointmentCancelled(claimed.patientId.toString(), appointmentId);
 
   await getNotificationQueue().add(
     NotificationType.APPOINTMENT_CANCELLED,
     {
       type: NotificationType.APPOINTMENT_CANCELLED,
       appointmentId,
-      userId: appointment.patientId.toString(),
+      userId: claimed.patientId.toString(),
     },
-    { attempts: 5, backoff: { type: "exponential", delay: 2000 } },
+    {
+      jobId: `cancelled-${appointmentId}`,
+      attempts: 5,
+      backoff: { type: "exponential", delay: 2000 },
+    },
   );
 
-  return appointment;
+  // Re-read so the response reflects the refund outcome
+  return (await Appointment.findById(appointmentId)) ?? claimed;
 }
 
 // ===== Complete Appointment =====
@@ -355,9 +427,23 @@ export async function completeAppointment(
     );
   }
 
-  appointment.status = AppointmentStatus.COMPLETED;
-  if (input.doctorNotes) appointment.doctorNotes = input.doctorNotes;
-  await appointment.save();
+  // Compare-and-set so a concurrent cancel can't be overwritten by "completed"
+  const update: Record<string, unknown> = {
+    status: AppointmentStatus.COMPLETED,
+  };
+  if (input.doctorNotes) update.doctorNotes = input.doctorNotes;
+  const completed = await Appointment.findOneAndUpdate(
+    { _id: appointment._id, status: AppointmentStatus.CONFIRMED },
+    update,
+    { new: true },
+  ).select("+doctorNotes");
+  if (!completed) {
+    throw new AppError(
+      "INVALID_STATUS",
+      400,
+      "Only confirmed appointments can be completed",
+    );
+  }
 
   wsEmit.appointmentCompleted(appointment.patientId.toString(), appointmentId);
 
@@ -368,8 +454,12 @@ export async function completeAppointment(
       appointmentId,
       userId: appointment.patientId.toString(),
     },
-    { attempts: 5, backoff: { type: "exponential", delay: 2000 } },
+    {
+      jobId: `completed-${appointmentId}`,
+      attempts: 5,
+      backoff: { type: "exponential", delay: 2000 },
+    },
   );
 
-  return appointment;
+  return completed;
 }

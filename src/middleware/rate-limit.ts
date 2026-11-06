@@ -1,4 +1,5 @@
 import { RequestHandler } from "express";
+import { randomUUID } from "crypto";
 import getRedis from "../config/redis";
 import { AppError } from "../types/errors";
 import { RATE_LIMIT_SCRIPT } from "../utils/lua-scripts";
@@ -29,6 +30,7 @@ export function createRateLimiter(options: RateLimiterOptions): RequestHandler {
         now,
         windowStart,
         ttl,
+        randomUUID(),
       )) as number;
 
       res.set("X-RateLimit-Limit", options.max.toString());

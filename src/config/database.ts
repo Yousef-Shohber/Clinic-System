@@ -17,7 +17,7 @@ export async function connectDatabase(): Promise<void> {
       return;
     } catch (err) {
       logger.error(
-        { attempt, Error: err },
+        { attempt, err },
         `MongoDB connection attempt ${attempt} failed`,
       );
       if (attempt < MAX_ATTEMPTS) {

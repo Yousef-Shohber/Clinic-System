@@ -7,7 +7,8 @@ export function validate(
   target: "body" | "query" | "params" = "body",
 ): RequestHandler {
   return (req, _res, next): void => {
-    const result = schema.safeParse(req[target]);
+    const input = req[target] ?? (target === "body" ? {} : req[target]);
+    const result = schema.safeParse(input);
 
     if (!result.success) {
       const details = result.error.issues.map((issue) => ({
@@ -19,7 +20,12 @@ export function validate(
       );
     }
 
-    req[target] = result.data;
+    Object.defineProperty(req, target, {
+      value: result.data,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
     next();
   };
 }

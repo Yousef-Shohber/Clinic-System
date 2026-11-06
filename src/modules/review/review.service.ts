@@ -71,7 +71,7 @@ export async function getDoctorReviews(
     Review.find({ doctorId })
       .skip(skip)
       .limit(limit)
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .populate("patientId", "name profilePhoto")
       .lean(),
     Review.countDocuments({ doctorId }),

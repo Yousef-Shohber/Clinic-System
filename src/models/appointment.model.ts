@@ -12,7 +12,9 @@ export interface IAppointment extends Document {
   endTime: string; // "09:30"
   status: AppointmentStatus;
   paymentStatus: PaymentStatus;
-  paymentIntentId?: string;
+  paymentIntentId?: string; // Paymob order id
+  paymentTransactionId?: string; // Paymob transaction id (needed for refunds)
+  amountCents?: number; // amount the Paymob order was created with
   patientNotes?: string;
   doctorNotes?: string;
   expiresAt: Date;
@@ -64,6 +66,13 @@ const appointmentSchema = new Schema<IAppointment>(
     paymentIntentId: {
       type: String,
     },
+    paymentTransactionId: {
+      type: String,
+    },
+    amountCents: {
+      type: Number,
+      min: 0,
+    },
     patientNotes: {
       type: String,
       maxlength: 500,
@@ -98,25 +107,38 @@ const appointmentSchema = new Schema<IAppointment>(
   },
 );
 
-// منع حجز نفس الـ slot مرتين — الـ DB هو الـ last line of defense بعد الـ distributed lock
+export const ACTIVE_SLOT_STATUSES = [
+  AppointmentStatus.PENDING,
+  AppointmentStatus.CONFIRMED,
+  AppointmentStatus.COMPLETED,
+];
+
 appointmentSchema.index(
   { doctorId: 1, date: 1, startTime: 1 },
-  { unique: true },
+  {
+    unique: true,
+    name: "active_slot_unique",
+    partialFilterExpression: { status: { $in: ACTIVE_SLOT_STATUSES } },
+  },
 );
 
 // للـ query بتاع "appointments بتاعتي" مع filter بالـ status
 appointmentSchema.index({ patientId: 1, status: 1 });
 
-// TTL index — MongoDB بيمسح الـ document تلقائياً لما expiresAt يعدي
-// partial index — بيشتغل على pending فقط عشان ميمسحش confirmed/completed
-// ده backup للـ BullMQ expiry job — مش بديل عنه
+// NOT a TTL index any more: a TTL index *deletes* the document (history, payment
+// reference and the "expired" notification all vanish). Overdue pending
+// appointments are now marked EXPIRED by the sweeper in expiration.worker.ts,
+// which uses this index.
 appointmentSchema.index(
   { expiresAt: 1 },
   {
-    expireAfterSeconds: 0,
+    name: "pending_expiry_scan",
     partialFilterExpression: { status: AppointmentStatus.PENDING },
   },
 );
+
+// Webhook lookups by Paymob order id
+appointmentSchema.index({ paymentIntentId: 1 }, { sparse: true });
 
 export const Appointment = mongoose.model<IAppointment>(
   "Appointment",

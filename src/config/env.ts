@@ -8,7 +8,12 @@ const envSchema = z.object({
     .default("development"),
   PORT: z.string().default("8000").transform(Number),
   CLIENT_URL: z.string().url(),
-  CORS_ORIGINS: z.string().transform((val) => val.split(",")),
+  CORS_ORIGINS: z.string().transform((val) =>
+    val
+      .split(",")
+      .map((o) => o.trim())
+      .filter(Boolean),
+  ),
 
   // Database
   MONGODB_URI: z.string().min(1),
@@ -47,13 +52,30 @@ const envSchema = z.object({
   PAYMOB_INTEGRATION_ID: z.string().min(1),
   PAYMOB_IFRAME_ID: z.string().min(1),
   PAYMOB_HMAC_SECRET: z.string().min(1),
+  PAYMOB_BASE_URL: z.string().url().default("https://accept.paymob.com/api"),
 
   // Config
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60000),
+  RATE_LIMIT_MAX: z.coerce.number().int().positive().default(100),
   BCRYPT_ROUNDS: z.string().default("12").transform(Number),
   APPOINTMENT_EXPIRY_MINUTES: z.string().default("15").transform(Number),
   CACHE_TTL_SECONDS: z.string().default("60").transform(Number),
   LOCK_TTL_MS: z.string().default("10000").transform(Number),
   IDEMPOTENCY_TTL_SECONDS: z.coerce.number().default(86400),
+  CLINIC_TIMEZONE: z
+    .string()
+    .default("Africa/Cairo")
+    .refine(
+      (tz) => {
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: tz });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "Invalid IANA timezone" },
+    ),
 });
 
 export type Env = z.infer<typeof envSchema>;

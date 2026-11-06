@@ -244,6 +244,12 @@ APPOINTMENT_EXPIRY_MINUTES=15
 CACHE_TTL_SECONDS=60
 LOCK_TTL_MS=10000
 IDEMPOTENCY_TTL_SECONDS=86400
+
+# Timezone the clinic schedules ("09:00" slots) are expressed in (IANA name)
+CLINIC_TIMEZONE=Africa/Cairo
+
+# Optional: override the Paymob API base (tests point it at a local stand-in)
+# PAYMOB_BASE_URL=https://accept.paymob.com/api
 ```
 
 > **Getting Paymob keys:**
@@ -480,7 +486,7 @@ src/
 │   ├── user.model.ts       # bcrypt pre-save hook, comparePassword method
 │   ├── doctor.model.ts     # text index (name + specialization)
 │   ├── schedule.model.ts   # compound unique index {doctorId, day}
-│   ├── appointment.model.ts # TTL index on expiresAt, doctorNotes select:false
+│   ├── appointment.model.ts # partial unique slot index (active statuses only), doctorNotes select:false
 │   └── review.model.ts     # post-save/findOneAndDelete → recalculate doctor rating
 │
 ├── modules/

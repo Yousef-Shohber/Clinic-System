@@ -21,13 +21,30 @@ export function initPassport(): void {
             return done(new Error("No email returned from Google"));
           }
 
+          const googleVerified = (
+            profile as { _json?: { email_verified?: boolean | string } }
+          )._json?.email_verified;
+          if (googleVerified === false || googleVerified === "false") {
+            return done(new Error("Google email is not verified"));
+          }
+
           let user = await User.findOne({ email });
 
           if (user) {
             if (!user.googleId) {
-              user.googleId = profile.id;
-              user.isEmailVerified = true;
-              await user.save();
+              if (!user.isEmailVerified) {
+                await User.updateOne(
+                  { _id: user._id },
+                  {
+                    $set: { googleId: profile.id, isEmailVerified: true },
+                    $unset: { password: 1 },
+                  },
+                );
+                user = (await User.findById(user._id)) ?? user;
+              } else {
+                user.googleId = profile.id;
+                await user.save();
+              }
             }
             return done(null, user);
           }

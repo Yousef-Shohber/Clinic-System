@@ -1,5 +1,6 @@
 import { Queue, Worker, WorkerOptions, Processor } from "bullmq";
 import getRedis from "../config/redis";
+import { logger } from "../config/logger";
 
 function getBullMQConnection() {
   return getRedis().duplicate();
@@ -19,6 +20,10 @@ export function getExpirationQueue(): Queue {
         removeOnFail: 100,
       },
     });
+    // An unhandled 'error' event on a BullMQ object would crash the process
+    _expirationQueue.on("error", (err) =>
+      logger.error({ err }, "Expiration queue error"),
+    );
   }
   return _expirationQueue;
 }
@@ -34,6 +39,9 @@ export function getNotificationQueue(): Queue {
         removeOnFail: 100,
       },
     });
+    _notificationQueue.on("error", (err) =>
+      logger.error({ err }, "Notification queue error"),
+    );
   }
   return _notificationQueue;
 }
@@ -43,8 +51,10 @@ export function createWorker(
   processor: Processor,
   options?: Partial<WorkerOptions>,
 ): Worker {
-  return new Worker(queueName, processor, {
+  const worker = new Worker(queueName, processor, {
     connection: getBullMQConnection(),
     ...options,
   });
+  worker.on("error", (err) => logger.error({ err, queueName }, "Worker error"));
+  return worker;
 }

@@ -8,6 +8,12 @@ import { logger } from "../config/logger";
 import { JwtPayload } from "../types/express";
 
 let _io: SocketServer;
+let _pubClient:
+  | ReturnType<ReturnType<typeof getRedis>["duplicate"]>
+  | undefined;
+let _subClient:
+  | ReturnType<ReturnType<typeof getRedis>["duplicate"]>
+  | undefined;
 
 export function initWebSocket(httpServer: HttpServer): SocketServer {
   const env = getEnv();
@@ -20,6 +26,8 @@ export function initWebSocket(httpServer: HttpServer): SocketServer {
 
   const pubClient = redis.duplicate();
   const subClient = redis.duplicate();
+  _pubClient = pubClient;
+  _subClient = subClient;
   _io.adapter(createAdapter(pubClient, subClient));
 
   _io.use((socket, next) => {
@@ -47,6 +55,16 @@ export function initWebSocket(httpServer: HttpServer): SocketServer {
 
   logger.info("WebSocket server initialized");
   return _io;
+}
+
+/** Disconnects every socket and closes the underlying HTTP server too. */
+export async function closeWebSocket(): Promise<void> {
+  if (_io) {
+    await new Promise<void>((resolve) => {
+      _io.close(() => resolve());
+    });
+  }
+  await Promise.allSettled([_pubClient?.quit(), _subClient?.quit()]);
 }
 
 export function getIO(): SocketServer {

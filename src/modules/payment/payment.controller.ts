@@ -17,6 +17,7 @@ export async function createPaymentSession(
     await storeIdempotentResponse(
       res.locals.idempotencyKey as string,
       responseData,
+      res.locals.idempotencyFingerprint as string | undefined,
     );
   }
 

@@ -16,7 +16,7 @@ async function getDoctorIdByUserId(userId: string): Promise<string> {
 }
 
 async function invalidateDoctorSlotsCache(doctorId: string): Promise<void> {
-  await cacheService.invalidatePattern(`doctor:slots:${doctorId}:*`);
+  await cacheService.invalidateDoctorSlots(doctorId);
 }
 
 // ===== Create =====
@@ -37,6 +37,7 @@ export async function createSchedule(
   }
 
   const schedule = await Schedule.create({ doctorId, ...input });
+  await invalidateDoctorSlotsCache(doctorId);
   return schedule;
 }
 
@@ -61,6 +62,22 @@ export async function updateSchedule(
 
   if (schedule.doctorId.toString() !== doctorId) {
     throw new AppError("FORBIDDEN", 403, "Not your schedule");
+  }
+
+  // A partial update is only validated field-by-field by the DTO, so check the
+  // merged result (e.g. moving only startTime past the stored endTime)
+  const startTime = input.startTime ?? schedule.startTime;
+  const endTime = input.endTime ?? schedule.endTime;
+  const slotDuration = input.slotDuration ?? schedule.slotDuration;
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  const windowMinutes = eh * 60 + em - (sh * 60 + sm);
+  if (windowMinutes <= 0 || windowMinutes < slotDuration) {
+    throw new AppError(
+      "VALIDATION_ERROR",
+      422,
+      "Schedule must end after it starts and fit at least one slot",
+    );
   }
 
   Object.assign(schedule, input);

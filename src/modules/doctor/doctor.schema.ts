@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidCalendarDate } from "../../utils/clinic-time";
 
 export const createDoctorSchema = z.object({
   doctorName: z.string().min(2).max(100).trim(),
@@ -30,7 +31,10 @@ export const verifyDoctorSchema = z.object({
 });
 
 export const getSlotsQuerySchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD")
+    .refine(isValidCalendarDate, { message: "Invalid calendar date" }),
 });
 
 export type CreateDoctorInput = z.infer<typeof createDoctorSchema>;

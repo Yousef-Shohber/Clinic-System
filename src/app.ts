@@ -67,7 +67,12 @@ export function createApp() {
 
   // ===== Rate Limiting =====
   app.use("/api/v1/auth", createRateLimiter({ max: 5, windowMs: 60_000 }));
-  app.use(createRateLimiter({ max: 100, windowMs: 60_000 }));
+  app.use(
+    createRateLimiter({
+      max: env.RATE_LIMIT_MAX,
+      windowMs: env.RATE_LIMIT_WINDOW_MS,
+    }),
+  );
 
   // ===== Routes =====
   app.use("/api/v1/auth", authRoutes);

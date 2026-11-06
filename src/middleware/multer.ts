@@ -35,7 +35,7 @@ export function uploadImage(fieldName = "image"): RequestHandler {
         return next(new AppError("UPLOAD_FAILED", 500, "Upload failed"));
       }
 
-      const files = req.files as Express.Multer.File[];
+      const files = (req.files ?? []) as Express.Multer.File[];
 
       if (files.length > 1) {
         return next(

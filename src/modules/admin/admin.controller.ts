@@ -8,21 +8,14 @@ export async function getStats(_req: Request, res: Response): Promise<void> {
 }
 
 export async function listUsers(req: Request, res: Response): Promise<void> {
-  const {
-    role,
-    page = "1",
-    limit = "10",
-  } = req.query as {
+  // validated + coerced by validate(ListUsersDto, "query") in the route
+  const { role, page, limit } = req.query as unknown as {
     role?: Role;
-    page?: string;
-    limit?: string;
+    page: number;
+    limit: number;
   };
 
-  const result = await adminService.listUsers({
-    role,
-    page: parseInt(page),
-    limit: parseInt(limit),
-  });
+  const result = await adminService.listUsers({ role, page, limit });
 
   res.status(200).json({ success: true, data: result });
 }

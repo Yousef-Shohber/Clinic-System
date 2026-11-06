@@ -32,6 +32,14 @@ export function parseDurationToSeconds(duration: string): number {
   }
 }
 
+// Atomic "read and delete": two concurrent refreshes with the same token can
+// never both consume it.
+const CONSUME_SCRIPT = `
+local v = redis.call("GET", KEYS[1])
+if v then redis.call("DEL", KEYS[1]) end
+return v
+`;
+
 async function scanKeys(pattern: string): Promise<string[]> {
   const redis = getRedis();
   let cursor = "0";
@@ -84,6 +92,19 @@ export async function revokeAllUserTokens(userId: string): Promise<void> {
   }
 }
 
+/** Revoke the single session a refresh token belongs to (logout). */
+export async function revokeRefreshToken(token: string): Promise<void> {
+  const env = getEnv();
+  try {
+    const decoded = jwt.verify(token, env.JWT_REFRESH_SECRET, {
+      ignoreExpiration: true,
+    }) as { userId: string; jti: string };
+    await getRedis().del(REDIS_KEYS.refreshToken(decoded.userId, decoded.jti));
+  } catch {
+    // Invalid/forged token: nothing to revoke
+  }
+}
+
 export async function rotateRefreshToken(
   oldToken: string,
 ): Promise<{ accessToken: string; refreshToken: string }> {
@@ -104,7 +125,11 @@ export async function rotateRefreshToken(
   }
 
   const { userId, jti } = decoded;
-  const storedHash = await redis.get(REDIS_KEYS.refreshToken(userId, jti));
+  const storedHash = (await redis.eval(
+    CONSUME_SCRIPT,
+    1,
+    REDIS_KEYS.refreshToken(userId, jti),
+  )) as string | null;
 
   if (!storedHash) {
     await revokeAllUserTokens(userId);
@@ -127,8 +152,6 @@ export async function rotateRefreshToken(
       "Refresh token reuse detected",
     );
   }
-
-  await redis.del(REDIS_KEYS.refreshToken(userId, jti));
 
   const user = await User.findById(userId);
   if (!user) {

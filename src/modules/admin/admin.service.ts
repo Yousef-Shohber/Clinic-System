@@ -36,7 +36,18 @@ export async function getStats() {
         },
       },
       { $unwind: "$doctor" },
-      { $group: { _id: null, total: { $sum: "$doctor.fees" } } },
+      {
+        $group: {
+          _id: null,
+          // the amount actually charged; falls back to current fees for
+          // appointments paid before amountCents was recorded
+          total: {
+            $sum: {
+              $ifNull: [{ $divide: ["$amountCents", 100] }, "$doctor.fees"],
+            },
+          },
+        },
+      },
     ]),
 
     // Revenue by month — last 6 months
@@ -64,7 +75,11 @@ export async function getStats() {
             year: { $year: "$confirmedAt" },
             month: { $month: "$confirmedAt" },
           },
-          revenue: { $sum: "$doctor.fees" },
+          revenue: {
+            $sum: {
+              $ifNull: [{ $divide: ["$amountCents", 100] }, "$doctor.fees"],
+            },
+          },
           count: { $sum: 1 },
         },
       },
@@ -138,7 +153,11 @@ export async function listUsers(query: {
   if (role) filter.role = role;
 
   const [users, total] = await Promise.all([
-    User.find(filter).skip(skip).limit(limit).sort({ createdAt: -1 }).lean(),
+    User.find(filter)
+      .skip(skip)
+      .limit(limit)
+      .sort({ createdAt: -1, _id: -1 })
+      .lean(),
     User.countDocuments(filter),
   ]);
 

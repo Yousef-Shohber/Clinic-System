@@ -15,7 +15,11 @@ export async function createAppointment(
   const responseData = { success: true, data: { appointment } };
 
   if (res.locals.idempotencyKey) {
-    await storeIdempotentResponse(res.locals.idempotencyKey, responseData);
+    await storeIdempotentResponse(
+      res.locals.idempotencyKey,
+      responseData,
+      res.locals.idempotencyFingerprint,
+    );
   }
 
   res.status(201).json(responseData);

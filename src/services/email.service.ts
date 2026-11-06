@@ -12,6 +12,9 @@ function getTransporter(): Transporter {
     host: env.SMTP_HOST,
     port: env.SMTP_PORT,
     secure: env.SMTP_PORT === 465,
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
     auth: {
       user: env.SMTP_USER,
       pass: env.SMTP_PASS,
@@ -19,6 +22,16 @@ function getTransporter(): Transporter {
   });
 
   return _transporter;
+}
+
+// doctorName is user-controlled: never interpolate it into HTML unescaped
+function esc(value: string): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 type TemplateKey =
@@ -109,9 +122,9 @@ function buildTemplate<K extends TemplateKey>(
         html: `
           <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
             <h2>Your appointment is confirmed</h2>
-            <p><strong>Doctor:</strong> ${d.doctorName}</p>
-            <p><strong>Date:</strong> ${d.date}</p>
-            <p><strong>Time:</strong> ${d.startTime}</p>
+            <p><strong>Doctor:</strong> ${esc(d.doctorName)}</p>
+            <p><strong>Date:</strong> ${esc(d.date)}</p>
+            <p><strong>Time:</strong> ${esc(d.startTime)}</p>
           </div>`,
       };
     }
@@ -123,9 +136,9 @@ function buildTemplate<K extends TemplateKey>(
         html: `
           <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
             <h2>Your appointment has been cancelled</h2>
-            <p><strong>Doctor:</strong> ${d.doctorName}</p>
-            <p><strong>Date:</strong> ${d.date}</p>
-            <p><strong>Time:</strong> ${d.startTime}</p>
+            <p><strong>Doctor:</strong> ${esc(d.doctorName)}</p>
+            <p><strong>Date:</strong> ${esc(d.date)}</p>
+            <p><strong>Time:</strong> ${esc(d.startTime)}</p>
             <p>If you paid, a full refund will be processed shortly.</p>
           </div>`,
       };
@@ -138,9 +151,9 @@ function buildTemplate<K extends TemplateKey>(
         html: `
           <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
             <h2>Your appointment has expired</h2>
-            <p><strong>Doctor:</strong> ${d.doctorName}</p>
-            <p><strong>Date:</strong> ${d.date}</p>
-            <p><strong>Time:</strong> ${d.startTime}</p>
+            <p><strong>Doctor:</strong> ${esc(d.doctorName)}</p>
+            <p><strong>Date:</strong> ${esc(d.date)}</p>
+            <p><strong>Time:</strong> ${esc(d.startTime)}</p>
             <p>Payment was not completed in time. Please book again.</p>
           </div>`,
       };
@@ -153,8 +166,8 @@ function buildTemplate<K extends TemplateKey>(
         html: `
           <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
             <h2>Appointment completed</h2>
-            <p><strong>Doctor:</strong> ${d.doctorName}</p>
-            <p><strong>Date:</strong> ${d.date}</p>
+            <p><strong>Doctor:</strong> ${esc(d.doctorName)}</p>
+            <p><strong>Date:</strong> ${esc(d.date)}</p>
             <p>We hope you had a great experience. Please leave a review!</p>
           </div>`,
       };
@@ -167,9 +180,9 @@ function buildTemplate<K extends TemplateKey>(
         html: `
           <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
             <h2>You have an appointment tomorrow</h2>
-            <p><strong>Doctor:</strong> ${d.doctorName}</p>
-            <p><strong>Date:</strong> ${d.date}</p>
-            <p><strong>Time:</strong> ${d.startTime}</p>
+            <p><strong>Doctor:</strong> ${esc(d.doctorName)}</p>
+            <p><strong>Date:</strong> ${esc(d.date)}</p>
+            <p><strong>Time:</strong> ${esc(d.startTime)}</p>
           </div>`,
       };
     }

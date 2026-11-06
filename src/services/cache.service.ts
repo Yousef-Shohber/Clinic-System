@@ -5,8 +5,10 @@ export const REDIS_KEYS = {
   slotLock: (doctorId: string, date: string, startTime: string) =>
     `lock:slot:${doctorId}:${date}:${startTime}`,
 
-  doctorSlots: (doctorId: string, date: string) =>
-    `doctor:slots:${doctorId}:${date}`,
+  doctorSlotsVersion: (doctorId: string) => `doctor:slots:ver:${doctorId}`,
+
+  doctorSlots: (doctorId: string, date: string, version: string = "0") =>
+    `doctor:slots:${doctorId}:v${version}:${date}`,
 
   doctorProfile: (doctorId: string) => `doctor:profile:${doctorId}`,
 
@@ -14,9 +16,15 @@ export const REDIS_KEYS = {
 
   allRefreshTokens: (userId: string) => `rt:${userId}:*`,
 
-  otpEmailVerify: (email: string) => `otp:email-verify:${email}`,
+  otpEmailVerify: (email: string) => `otp:email-verify:${email.toLowerCase()}`,
 
-  otpPasswordReset: (email: string) => `otp:password-reset:${email}`,
+  otpPasswordReset: (email: string) =>
+    `otp:password-reset:${email.toLowerCase()}`,
+
+  otpCooldown: (purpose: string, email: string) =>
+    `otp:cooldown:${purpose}:${email.toLowerCase()}`,
+
+  loginFailures: (email: string) => `login:fail:${email.toLowerCase()}`,
 
   rateLimit: (identifier: string, path: string) => `rl:${identifier}:${path}`,
 
@@ -44,6 +52,22 @@ export class CacheService {
 
   async del(...keys: string[]): Promise<void> {
     if (keys.length > 0) await this.redis.del(...keys);
+  }
+
+  async getDoctorSlotsVersion(doctorId: string): Promise<string> {
+    try {
+      return (
+        (await this.redis.get(REDIS_KEYS.doctorSlotsVersion(doctorId))) ?? "0"
+      );
+    } catch {
+      return "0";
+    }
+  }
+
+  async invalidateDoctorSlots(doctorId: string): Promise<void> {
+    const key = REDIS_KEYS.doctorSlotsVersion(doctorId);
+    await this.redis.incr(key);
+    await this.redis.expire(key, 86400);
   }
 
   async invalidatePattern(pattern: string): Promise<void> {
